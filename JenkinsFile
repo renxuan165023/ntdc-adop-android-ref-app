@@ -1,0 +1,70 @@
+node('java') {
+    def nodeHome = tool name: 'ADOP NodeJS', type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
+    env.PATH = "${nodeHome}/bin:${env.PATH}"
+
+
+    stage('check tools') {
+        sh '''            
+            npm install -g yo           
+            npm install generator-android
+            node -v
+            npm -v
+            '''
+    }
+
+    stage('checkout') {
+        sh 'echo $TEST_VAR'
+        checkout scm
+    }
+
+    stage('npm install') {
+        sh "npm install"
+    }
+
+    stage('code analysis') {
+        withSonarQubeEnv('ADOP Sonar') {
+            sh '''
+                url=`echo "$SONAR_JDBC_URL" | sed "s/amp;//"`
+                ./mvnw clean test sonar:sonar \
+                    -Dsonar.host.url=$SONAR_HOST_URL \
+                    -Dsonar.login=$SONAR_LOGIN \
+                    -Dsonar.password=$SONAR_PASSWORD \
+                    -Dsonar.jdbc.url=$url \
+                    -Dsonar.jdbc.username=$SONAR_JDBC_USERNAME \
+                    -Dsonar.jdbc.password=$SONAR_JDBC_PASSWORD
+                '''
+        }
+    }
+
+    stage('packaging') {
+        sh "./mvnw package -Pprod -DskipTests docker:build"
+    }
+
+    stage('deploy') {
+        sh '''
+        set +x
+        set +e
+        
+        # Check availability
+        count=1
+        available=false
+
+        echo "Check availability of $APP_NAME ..."
+
+        until [ $count -ge 12 ]
+        do
+         ret=$(curl --write-out "%{http_code}" --silent --output /dev/null "http://${HOSTNAME}:8080/index.html")
+
+         [[ ${ret} -eq 200 ]] && echo "$APP_NAME is online !" && available=true && break
+         count=$[$count+1]
+         echo "Unable to access $APP_NAME, response code ${ret}, retry ... ${count}"
+         sleep 10
+        done
+
+        # If the app is available, failed the build
+        [ ! available ] && exit 1
+
+        '''
+     }
+    
+}
